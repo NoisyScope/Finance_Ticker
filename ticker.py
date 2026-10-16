@@ -1,9 +1,9 @@
-"""Live terminal board: ticker, price, % change and a block-character graph of today's session."""
+"""Live terminal board: ticker, price, day/week/month % change and a block graph of today."""
 import json
 import shutil
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 BARS = "▁▂▃▄▅▆▇█"
@@ -22,23 +22,39 @@ def spark(values, width):
     return "".join(BARS[int((v - lo) / (hi - lo) * (len(BARS) - 1))] for v in pts)
 
 
+def change(daily, last, days):
+    """% change of `last` vs the latest daily close at least `days` before the newest bar."""
+    base = daily[daily.index <= daily.index[-1] - timedelta(days=days)]
+    return (last / base.iloc[-1] - 1) * 100 if len(base) else None
+
+
+def fmt(pct):
+    if pct is None:
+        return f"{'n/a':>8}"
+    return f"{GREEN if pct >= 0 else RED}{pct:>+7.2f}%{RESET}"
+
+
 def render(tickers):
     import yfinance as yf  # imported here so the graph test runs without yfinance
 
-    data = yf.download(tickers, period="1d", interval="1m", group_by="ticker",
-                       progress=False, threads=True, auto_adjust=True)
-    width = max(shutil.get_terminal_size().columns - 31, 0)  # 30 cols of text + 1 margin
-    lines = [f"{BOLD}{'SYMBOL':<8} {'PRICE':>10} {'CHANGE':>8}  {'TODAY':<{width}}{RESET}"]
+    opts = dict(group_by="ticker", progress=False, threads=True, auto_adjust=True)
+    intraday = yf.download(tickers, period="1d", interval="1m", **opts)
+    daily = yf.download(tickers, period="2mo", interval="1d", **opts)
+    width = max(shutil.get_terminal_size().columns - 49, 0)  # 48 cols of text + 1 margin
+    lines = [f"{BOLD}{'SYMBOL':<8} {'PRICE':>10} {'DAY':>8} {'WEEK':>8} {'MONTH':>8}  "
+             f"{'TODAY':<{width}}{RESET}"]
     for sym in tickers:
         try:
-            closes = data[sym]["Close"].dropna().tolist()
-            first, last = closes[0], closes[-1]
+            closes = intraday[sym]["Close"].dropna().tolist()
+            last = closes[-1]
+            d = daily[sym]["Close"].dropna()
+            day, week, month = (change(d, last, n) for n in (1, 7, 30))
         except (KeyError, IndexError):
             lines.append(f"{sym:<8} {'n/a':>10}")
             continue
-        pct = (last / first - 1) * 100
-        color = GREEN if pct >= 0 else RED
-        lines.append(f"{color}{sym:<8} {last:>10.2f} {pct:>+7.2f}%  {spark(closes, width)}{RESET}")
+        color = RED if day is not None and day < 0 else GREEN
+        lines.append(f"{sym:<8} {last:>10.2f} {fmt(day)} {fmt(week)} {fmt(month)}  "
+                     f"{color}{spark(closes, width)}{RESET}")
     print("\033[H\033[2J", end="")
     print("\n".join(lines)
           + f"\n\nupdated {datetime.now():%H:%M:%S}  (Ctrl+C to quit)", flush=True)
